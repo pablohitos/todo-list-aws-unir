@@ -22,9 +22,7 @@ def get_table(dynamodb=None):
 def get_item(key, dynamodb=None):
     table = get_table(dynamodb)
     try:
-        result = table.get_item(
-            Key={'id': key}
-        )
+        result = table.get_item(Key={'id': key})
     except ClientError as e:
         print(e.response['Error']['Message'])
     else:
@@ -41,7 +39,7 @@ def get_items(dynamodb=None):
 
 def put_item(text, dynamodb=None):
     if not text:
-        raise ValueError("El texto no puede estar vacío")
+        raise Exception("El parámetro 'text' no puede estar vacío")
 
     table = get_table(dynamodb)
     timestamp = str(time.time())
@@ -61,16 +59,22 @@ def put_item(text, dynamodb=None):
         }
     except ClientError as e:
         print(e.response['Error']['Message'])
+        raise
     else:
         return response
 
 
 def update_item(key, text, checked, dynamodb=None):
-    if not key or text is None or checked is None:
-        raise ValueError("Parámetros inválidos para update_item")
+    if not key:
+        raise TypeError("El parámetro 'key' no puede estar vacío")
+    if not text:
+        raise Exception("El parámetro 'text' no puede estar vacío")
+    if not checked:
+        raise Exception("El parámetro 'checked' no puede estar vacío")
 
     table = get_table(dynamodb)
     timestamp = int(time.time() * 1000)
+
     try:
         result = table.update_item(
             Key={'id': key},
@@ -85,19 +89,21 @@ def update_item(key, text, checked, dynamodb=None):
         )
     except ClientError as e:
         print(e.response['Error']['Message'])
+        raise
     else:
         return result['Attributes']
 
 
 def delete_item(key, dynamodb=None):
     if not key:
-        raise TypeError("El ID del todo no puede estar vacío")
+        raise TypeError("El parámetro 'key' no puede estar vacío")
 
     table = get_table(dynamodb)
     try:
         table.delete_item(Key={'id': key})
     except ClientError as e:
         print(e.response['Error']['Message'])
+        raise
     else:
         return
 
