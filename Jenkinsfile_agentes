@@ -6,11 +6,12 @@ pipeline {
         S3_BUCKET = 'staging-todo-list-aws-pablo'
         STACK_NAME = 'staging-todo-list-aws'
         STAGE = 'default'
+        BASE_URL = 'https://wjjvpkiebg.execute-api.us-east-1.amazonaws.com/Prod'
     }
 
     stages {
         stage('Checkout') {
-            agent any
+            agent { label 'master' }
             steps {
                 echo 'Clonando repositorio...'
                 git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'develop'
@@ -36,9 +37,9 @@ pipeline {
         }
 
         stage('Despliegue Staging') {
-            agent any
+            agent { label 'master' }
             steps {
-                echo 'Desplegando entorno Staging...'
+                echo 'Desplegando entorno Staging con SAM...'
                 sh 'sam build'
                 sh 'sam validate --region ${AWS_DEFAULT_REGION}'
                 sh '''
@@ -56,13 +57,10 @@ pipeline {
         stage('Pruebas REST con Pytest') {
             agent { label 'agent-api' }
             steps {
-                script {
-                    def url = sh(script: "aws cloudformation describe-stacks --stack-name ${STACK_NAME} --query \"Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue\" --output text", returnStdout: true).trim()
-                    env.BASE_URL = url
-                }
-                echo "BASE_URL obtenido: ${env.BASE_URL}"
+                echo 'Ejecutando pruebas REST con Pytest...'
                 sh '''
                     export PYTHONPATH=:$WORKSPACE/src
+                    export BASE_URL=${BASE_URL}
                     pytest test/ --junitxml=result.xml
                 '''
                 junit 'result.xml'
@@ -70,9 +68,9 @@ pipeline {
         }
 
         stage('Promoción a main') {
-            agent any
+            agent { label 'master' }
             steps {
-                echo 'Promoviendo a main...'
+                echo 'Promoviendo cambios a rama main...'
                 withCredentials([usernamePassword(credentialsId: 'github-token-userpass', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
                     sh '''
                         git config --global user.email "jenkins@example.com"
@@ -88,7 +86,8 @@ pipeline {
 
     post {
         always {
-            echo 'Pipeline CI distribuido finalizado.'
+            echo 'Pipeline de integración continua distribuido finalizado.'
         }
     }
 }
+
