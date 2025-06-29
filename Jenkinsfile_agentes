@@ -77,7 +77,7 @@ pipeline {
                         git config --global user.email "jenkins@example.com"
                         git config --global user.name "Jenkins"
                         git checkout main
-                        git merge develop
+                        git merge origin/develop
                         git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/pablohitos/todo-list-aws-unir main
                     '''
                 }
