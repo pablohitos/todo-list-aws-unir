@@ -14,7 +14,7 @@ pipeline {
 
     stages {
         stage('Checkout') {
-            agent { label 'master' } // o 'built-in' si no tienes master
+            agent any
             steps {
                 echo 'Clonando repositorio desde develop...'
                 git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'develop'
@@ -42,7 +42,7 @@ pipeline {
         }
 
         stage('Despliegue Staging') {
-            agent { label 'master' }
+            agent any
             steps {
                 checkout scm
                 echo 'Desplegando entorno Staging con SAM...'
@@ -92,8 +92,9 @@ pipeline {
         }
 
         stage('Despliegue Producción') {
-            agent { label 'master' }
+            agent any
             steps {
+                checkout scm
                 echo 'Desplegando entorno Producción con SAM...'
                 sh 'sam build'
                 sh 'sam validate --region ${AWS_DEFAULT_REGION}'
@@ -112,6 +113,7 @@ pipeline {
         stage('Pruebas REST Producción') {
             agent { label 'jenkins-agent-api' }
             steps {
+                checkout scm
                 echo 'Ejecutando pruebas de lectura en Producción con Pytest...'
                 sh '''
                     export PYTHONPATH=:$WORKSPACE/src
@@ -129,3 +131,4 @@ pipeline {
         }
     }
 }
+
