@@ -1,0 +1,98 @@
+pipeline {
+    agent none
+
+    environment {
+        AWS_DEFAULT_REGION = 'us-east-1'
+        S3_BUCKET = 'staging-todo-list-aws-pablo'
+        STACK_NAME = 'staging-todo-list-aws'
+        STAGE = 'default'
+        BASE_URL = ''
+    }
+
+    stages {
+        stage('Checkout') {
+            agent { label 'master' }
+            steps {
+                echo 'Clonando repositorio...'
+                git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'develop'
+            }
+        }
+
+        stage('Análisis Estático - Flake8') {
+            agent { label 'agent-estatico' }
+            steps {
+                echo 'Ejecutando Flake8...'
+                sh 'flake8 src --format=default --exit-zero > flake8-report.txt'
+                archiveArtifacts artifacts: 'flake8-report.txt'
+            }
+        }
+
+        stage('Análisis de Seguridad - Bandit') {
+            agent { label 'agent-estatico' }
+            steps {
+                echo 'Ejecutando Bandit...'
+                sh 'bandit -r src -f json -o bandit-report.json || true'
+                archiveArtifacts artifacts: 'bandit-report.json'
+            }
+        }
+
+        stage('Despliegue Staging') {
+            agent { label 'master' }
+            steps {
+                echo 'Desplegando entorno Staging con SAM...'
+                sh 'sam build'
+                sh 'sam validate --region ${AWS_DEFAULT_REGION}'
+                sh '''
+                    sam deploy \
+                        --stack-name ${STACK_NAME} \
+                        --s3-bucket ${S3_BUCKET} \
+                        --capabilities CAPABILITY_IAM \
+                        --region ${AWS_DEFAULT_REGION} \
+                        --parameter-overrides Stage=${STAGE} \
+                        --no-fail-on-empty-changeset
+                '''
+            }
+        }
+
+        stage('Pruebas REST con Pytest') {
+            agent { label 'agent-api' }
+            steps {
+                script {
+                    BASE_URL = sh(
+                        script: "aws cloudformation describe-stacks --stack-name ${STACK_NAME} --query \"Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue\" --output text --region ${AWS_DEFAULT_REGION}",
+                        returnStdout: true
+                    ).trim()
+                }
+                echo "Usando BASE_URL: ${BASE_URL}"
+                sh """
+                    export PYTHONPATH=:$WORKSPACE/src
+                    export BASE_URL=${BASE_URL}
+                    pytest test/ --junitxml=result.xml
+                """
+                junit 'result.xml'
+            }
+        }
+
+        stage('Promoción a main') {
+            agent { label 'master' }
+            steps {
+                echo 'Promoviendo cambios a rama main...'
+                withCredentials([usernamePassword(credentialsId: 'github-token-userpass', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
+                    sh '''
+                        git config --global user.email "jenkins@example.com"
+                        git config --global user.name "Jenkins"
+                        git checkout main
+                        git merge develop
+                        git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/pablohitos/todo-list-aws-unir main
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Pipeline de integración continua (CI) con agentes finalizado.'
+        }
+    }
+}
