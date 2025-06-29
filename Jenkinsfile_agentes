@@ -6,12 +6,11 @@ pipeline {
         S3_BUCKET = 'staging-todo-list-aws-pablo'
         STACK_NAME = 'staging-todo-list-aws'
         STAGE = 'default'
-        BASE_URL = ''
     }
 
     stages {
         stage('Checkout') {
-            agent { label 'master' }
+            agent any
             steps {
                 echo 'Clonando repositorio...'
                 git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'develop'
@@ -37,9 +36,9 @@ pipeline {
         }
 
         stage('Despliegue Staging') {
-            agent { label 'master' }
+            agent any
             steps {
-                echo 'Desplegando entorno Staging con SAM...'
+                echo 'Desplegando entorno Staging...'
                 sh 'sam build'
                 sh 'sam validate --region ${AWS_DEFAULT_REGION}'
                 sh '''
@@ -58,25 +57,22 @@ pipeline {
             agent { label 'agent-api' }
             steps {
                 script {
-                    BASE_URL = sh(
-                        script: "aws cloudformation describe-stacks --stack-name ${STACK_NAME} --query \"Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue\" --output text --region ${AWS_DEFAULT_REGION}",
-                        returnStdout: true
-                    ).trim()
+                    def url = sh(script: "aws cloudformation describe-stacks --stack-name ${STACK_NAME} --query \"Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue\" --output text", returnStdout: true).trim()
+                    env.BASE_URL = url
                 }
-                echo "Usando BASE_URL: ${BASE_URL}"
-                sh """
+                echo "BASE_URL obtenido: ${env.BASE_URL}"
+                sh '''
                     export PYTHONPATH=:$WORKSPACE/src
-                    export BASE_URL=${BASE_URL}
                     pytest test/ --junitxml=result.xml
-                """
+                '''
                 junit 'result.xml'
             }
         }
 
         stage('Promoción a main') {
-            agent { label 'master' }
+            agent any
             steps {
-                echo 'Promoviendo cambios a rama main...'
+                echo 'Promoviendo a main...'
                 withCredentials([usernamePassword(credentialsId: 'github-token-userpass', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
                     sh '''
                         git config --global user.email "jenkins@example.com"
@@ -92,7 +88,7 @@ pipeline {
 
     post {
         always {
-            echo 'Pipeline de integración continua (CI) con agentes finalizado.'
+            echo 'Pipeline CI distribuido finalizado.'
         }
     }
 }
