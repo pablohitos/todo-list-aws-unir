@@ -10,8 +10,9 @@ pipeline {
     }
 
     stages {
+
         stage('Checkout') {
-            agent { label 'master' }
+            agent any
             steps {
                 echo 'Clonando repositorio...'
                 git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'develop'
@@ -37,7 +38,7 @@ pipeline {
         }
 
         stage('Despliegue Staging') {
-            agent { label 'master' }
+            agent any
             steps {
                 echo 'Desplegando entorno Staging con SAM...'
                 sh 'sam build'
@@ -55,7 +56,7 @@ pipeline {
         }
 
         stage('Pruebas REST con Pytest') {
-            agent { label 'agent-api' }
+            agent { label 'jenkins-agent-api' }
             steps {
                 echo 'Ejecutando pruebas REST con Pytest...'
                 sh '''
@@ -68,7 +69,7 @@ pipeline {
         }
 
         stage('Promoción a main') {
-            agent { label 'master' }
+            agent any
             steps {
                 echo 'Promoviendo cambios a rama main...'
                 withCredentials([usernamePassword(credentialsId: 'github-token-userpass', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
@@ -86,7 +87,7 @@ pipeline {
 
     post {
         always {
-            echo 'Pipeline de integración continua distribuido finalizado.'
+            echo 'Pipeline de integración continua finalizado.'
         }
     }
 }
