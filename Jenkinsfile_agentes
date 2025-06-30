@@ -3,20 +3,17 @@ pipeline {
 
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
-        STAGE_BUCKET = 'staging-todo-list-aws-pablo'
-        PROD_BUCKET = 'production-todo-list-aws-pablo'
-        STAGE_STACK = 'staging-todo-list-aws'
-        PROD_STACK = 'production-todo-list-aws'
+        S3_BUCKET = 'staging-todo-list-aws-pablo'
+        STACK_NAME = 'staging-todo-list-aws'
         STAGE = 'default'
-        PROD = 'production'
-        PROD_URL = 'https://wjjvpkiebg.execute-api.us-east-1.amazonaws.com/Prod'
     }
 
     stages {
         stage('Checkout') {
             agent any
             steps {
-                echo 'Clonando repositorio desde develop...'
+                echo 'Clonando repositorio...'
+                sh 'whoami && hostname'
                 git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'develop'
             }
         }
@@ -24,111 +21,111 @@ pipeline {
         stage('Análisis Estático - Flake8') {
             agent { label 'agent-estatico' }
             steps {
-                checkout scm
-                echo 'Ejecutando Flake8...'
-                sh 'flake8 src --format=default --exit-zero'
-                archiveArtifacts artifacts: '**/*.log', allowEmptyArchive: true
+                sh 'whoami && hostname'
+                echo 'Ejecutando flake8...'
+                sh 'python3 -m flake8 --format=pylint --exit-zero src > flake8-report.txt'
             }
         }
 
         stage('Análisis de Seguridad - Bandit') {
             agent { label 'agent-estatico' }
             steps {
-                checkout scm
+                sh 'whoami && hostname'
                 echo 'Ejecutando Bandit...'
                 sh 'bandit -r src -f json -o bandit-report.json'
-                archiveArtifacts artifacts: 'bandit-report.json', allowEmptyArchive: true
             }
         }
 
         stage('Despliegue Staging') {
             agent any
             steps {
-                checkout scm
+                sh 'whoami && hostname'
                 echo 'Desplegando entorno Staging con SAM...'
                 sh 'sam build'
                 sh 'sam validate --region ${AWS_DEFAULT_REGION}'
-                sh """
+                sh '''
                     sam deploy \
-                        --stack-name ${STAGE_STACK} \
-                        --s3-bucket ${STAGE_BUCKET} \
+                        --stack-name ${STACK_NAME} \
+                        --s3-bucket ${S3_BUCKET} \
                         --capabilities CAPABILITY_IAM \
                         --region ${AWS_DEFAULT_REGION} \
                         --parameter-overrides Stage=${STAGE} \
                         --no-fail-on-empty-changeset
-                """
+                '''
             }
         }
 
-        stage('Pruebas REST en Staging') {
-            agent { label 'jenkins-agent-api' }
+        stage('Obtener URL de API Gateway') {
+            agent any
             steps {
-                checkout scm
-                echo 'Ejecutando pruebas REST en Staging...'
+                echo 'Obteniendo URL base del API Gateway desde CloudFormation...'
+                script {
+                    def apiUrl = sh(
+                        script: """
+                            aws cloudformation describe-stacks \
+                              --stack-name ${STACK_NAME} \
+                              --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
+                              --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    echo "URL obtenida: ${apiUrl}"
+                    env.API_GATEWAY_URL = apiUrl
+                }
+            }
+        }
+
+        stage('Pruebas REST con Pytest') {
+            agent { label 'jenkins-agent-api' }
+            environment {
+                API_GATEWAY_URL = "${env.API_GATEWAY_URL}"
+            }
+            steps {
+                sh 'whoami && hostname'
+                echo "Ejecutando pruebas REST contra ${API_GATEWAY_URL}..."
                 sh '''
                     export PYTHONPATH=:$WORKSPACE/src
-                    export BASE_URL=https://wjjvpkiebg.execute-api.us-east-1.amazonaws.com/Prod
-                    pytest test/unit/ --junitxml=result.xml
+                    pytest test/ --junitxml=result.xml
                 '''
-                junit 'result.xml'
+                archiveArtifacts artifacts: 'result.xml', fingerprint: true
             }
         }
 
         stage('Promoción a main') {
             agent { label 'agent-estatico' }
             steps {
-                checkout scm
+                sh 'whoami && hostname'
                 echo 'Promoviendo cambios a rama main...'
-                withCredentials([usernamePassword(credentialsId: 'github-token-userpass', passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
+                withCredentials([usernamePassword(credentialsId: 'github-token-userpass', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
                     sh '''
                         git config --global user.email "jenkins@example.com"
                         git config --global user.name "Jenkins"
                         git checkout main
-                        git merge origin/develop
+                        git merge develop
                         git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/pablohitos/todo-list-aws-unir main
                     '''
                 }
-            }
-        }
-
-        stage('Despliegue Producción') {
-            agent any
-            steps {
-                checkout scm
-                echo 'Desplegando entorno Producción con SAM...'
-                sh 'sam build'
-                sh 'sam validate --region ${AWS_DEFAULT_REGION}'
-                sh """
-                    sam deploy \
-                        --stack-name ${PROD_STACK} \
-                        --s3-bucket ${PROD_BUCKET} \
-                        --capabilities CAPABILITY_IAM \
-                        --region ${AWS_DEFAULT_REGION} \
-                        --parameter-overrides Stage=${PROD} \
-                        --no-fail-on-empty-changeset
-                """
-            }
-        }
-
-        stage('Pruebas REST Producción') {
-            agent { label 'jenkins-agent-api' }
-            steps {
-                checkout scm
-                echo 'Ejecutando pruebas de lectura en Producción con Pytest...'
-                sh '''
-                    export PYTHONPATH=:$WORKSPACE/src
-                    export BASE_URL=${PROD_URL}
-                    pytest test/integration/todoApiTest.py --junitxml=result.xml
-                '''
-                junit 'result.xml'
             }
         }
     }
 
     post {
         always {
-            echo 'Pipeline CI/CD completo finalizado.'
+            node(label: 'agent-estatico') {
+                echo 'Pipeline de integración continua finalizado.'
+
+                // Copiar el archivo result.xml desde el mismo build
+                step([
+                    $class: 'CopyArtifact',
+                    projectName: env.JOB_NAME,
+                    selector: [$class: 'SpecificBuildSelector', buildNumber: env.BUILD_NUMBER],
+                    filter: 'result.xml'
+                ])
+
+                junit 'result.xml'
+                recordIssues tools: [pyLint(pattern: 'flake8-report.txt')]
+                archiveArtifacts artifacts: 'bandit-report.json', fingerprint: true
+            }
         }
     }
 }
-
