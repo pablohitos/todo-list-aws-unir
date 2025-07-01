@@ -24,8 +24,8 @@ image_repositories = []
 [production]
 [production.deploy]
 [production.deploy.parameters]
-stack_name = "todo-list-aws-production"
-s3_bucket = "aws-sam-cli-managed-production-samclisourcebucket-upt09go84tay"
+stack_name = "production-todo-list-aws"   
+s3_bucket = "production-todo-list-aws-pablo"   
 s3_prefix = "todo-list-aws"
 region = "us-east-1"
 capabilities = "CAPABILITY_IAM"
