@@ -1,51 +1,116 @@
 pipeline {
-    agent { label 'jenkins-agent-api' }
+    agent none
 
     environment {
         AWS_DEFAULT_REGION = 'us-east-1'
-        S3_BUCKET = 'production-todo-list-aws-pablo'
-        STACK_NAME = 'production-todo-list-aws'
-        STAGE = 'production'
-        BASE_URL = 'https://wjjvpkiebg.execute-api.us-east-1.amazonaws.com/Prod'
+        S3_BUCKET = 'staging-todo-list-aws-pablo'
+        STACK_NAME = 'staging-todo-list-aws'
+        STAGE = 'default'
     }
 
     stages {
         stage('Checkout') {
+            agent any
             steps {
+                echo 'Clonando repositorio de código fuente...'
                 sh 'whoami && hostname'
-                echo 'Clonando rama main...'
-                git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'main'
+                git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'develop'
+
+                echo 'Clonando configuración del entorno Staging...'
+                sh '''
+                    rm -rf config
+                    git clone --single-branch --branch staging https://github.com/pablohitos/todo-list-aws-config.git config
+                    cp config/samconfig.toml .
+                '''
             }
         }
 
-        stage('Despliegue Producción') {
+        stage('Análisis Estático - Flake8') {
+            agent { label 'agent-estatico' }
             steps {
                 sh 'whoami && hostname'
-                echo 'Desplegando entorno Producción con SAM...'
+                echo 'Ejecutando flake8...'
+                sh 'python3 -m flake8 --format=pylint --exit-zero src > flake8-report.txt'
+            }
+        }
+
+        stage('Análisis de Seguridad - Bandit') {
+            agent { label 'agent-estatico' }
+            steps {
+                sh 'whoami && hostname'
+                echo 'Ejecutando Bandit...'
+                sh 'bandit -r src -f json -o bandit-report.json'
+            }
+        }
+
+        stage('Despliegue Staging') {
+            agent any
+            steps {
+                sh 'whoami && hostname'
+                echo 'Desplegando entorno Staging con SAM usando configuración externa...'
                 sh 'sam build'
                 sh 'sam validate --region ${AWS_DEFAULT_REGION}'
-                sh '''
-                    sam deploy \
-                        --stack-name ${STACK_NAME} \
-                        --s3-bucket ${S3_BUCKET} \
-                        --capabilities CAPABILITY_IAM \
-                        --region ${AWS_DEFAULT_REGION} \
-                        --parameter-overrides Stage=${STAGE} \
-                        --no-fail-on-empty-changeset
-                '''
+                sh 'sam deploy --no-fail-on-empty-changeset'
             }
         }
 
-        stage('Pruebas de Lectura (Pytest)') {
+        stage('Obtener URL de API Gateway') {
+            agent any
             steps {
+                echo 'Obteniendo URL base del API Gateway desde CloudFormation...'
+                script {
+                    def apiUrl = sh(
+                        script: """
+                            aws cloudformation describe-stacks \
+                              --stack-name ${STACK_NAME} \
+                              --query "Stacks[0].Outputs[?OutputKey=='BaseUrlApi'].OutputValue" \
+                              --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    echo "URL obtenida: ${apiUrl}"
+                    env.API_GATEWAY_URL = apiUrl
+                }
+            }
+        }
+
+        stage('Pruebas REST con Pytest') {
+            agent { label 'jenkins-agent-api' }
+            environment {
+                API_GATEWAY_URL = "${env.API_GATEWAY_URL}"
+            }
+            steps {
+                echo 'Clonando repositorio de código fuente en agent-api...'
                 sh 'whoami && hostname'
-                echo "Ejecutando pruebas de solo lectura con Pytest contra ${BASE_URL}..."
+                git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'develop'
+                sh '''
+                    rm -rf config
+                    git clone --single-branch --branch staging https://github.com/pablohitos/todo-list-aws-config.git config
+                    cp config/samconfig.toml .
+                '''
+                echo "Ejecutando pruebas REST contra ${API_GATEWAY_URL}..."
                 sh '''
                     export PYTHONPATH=:$WORKSPACE/src
-                    export BASE_URL=${BASE_URL}
-                    pytest test/integration/todoApiTest.py --junitxml=result.xml
+                    pytest test/ --junitxml=result.xml
                 '''
                 archiveArtifacts artifacts: 'result.xml', fingerprint: true
+            }
+        }
+
+        stage('Promoción a main') {
+            agent { label 'agent-estatico' }
+            steps {
+                sh 'whoami && hostname'
+                echo 'Promoviendo cambios a rama main...'
+                withCredentials([usernamePassword(credentialsId: 'github-token-userpass', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
+                    sh '''
+                        git config --global user.email "jenkins@example.com"
+                        git config --global user.name "Jenkins"
+                        git checkout main
+                        git merge develop
+                        git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/pablohitos/todo-list-aws-unir main
+                    '''
+                }
             }
         }
     }
@@ -53,15 +118,20 @@ pipeline {
     post {
         always {
             node(label: 'agent-estatico') {
-                echo 'Pipeline de entrega continua (CD) finalizado.'
+                echo 'Pipeline de integración continua finalizado.'
+
                 step([
                     $class: 'CopyArtifact',
                     projectName: env.JOB_NAME,
                     selector: [$class: 'SpecificBuildSelector', buildNumber: env.BUILD_NUMBER],
                     filter: 'result.xml'
                 ])
+
                 junit 'result.xml'
+                recordIssues tools: [pyLint(pattern: 'flake8-report.txt')]
+                archiveArtifacts artifacts: 'bandit-report.json', fingerprint: true
             }
         }
     }
 }
+
