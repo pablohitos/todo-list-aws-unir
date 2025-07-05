@@ -5,16 +5,34 @@ pipeline {
         AWS_DEFAULT_REGION = 'us-east-1'
         S3_BUCKET = 'staging-todo-list-aws-pablo'
         STACK_NAME = 'staging-todo-list-aws'
-        STAGE = 'default'
+        STAGE = 'staging'
     }
 
     stages {
+        stage('Cleanup Workspace') {
+            agent { label 'jenkins-agent-api' }
+            steps {
+                cleanWs()
+            }
+        }
+
+        stage('Cleanup agent-estatico') {
+            agent { label 'agent-estatico' }
+            steps {
+                cleanWs()
+            }
+        }
+
         stage('Checkout') {
             agent any
             steps {
-                echo 'Clonando repositorio...'
+                echo 'Clonando repositorio de código fuente...'
                 sh 'whoami && hostname'
                 git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'develop'
+                echo 'Clonando configuración del entorno Staging...'
+                sh 'rm -rf config'
+                sh 'git clone --single-branch --branch staging https://github.com/pablohitos/todo-list-aws-config.git config'
+                sh 'cp config/samconfig.toml .'
             }
         }
 
@@ -24,6 +42,7 @@ pipeline {
                 sh 'whoami && hostname'
                 echo 'Ejecutando flake8...'
                 sh 'python3 -m flake8 --format=pylint --exit-zero src > flake8-report.txt'
+                stash includes: 'flake8-report.txt', name: 'flake8'
             }
         }
 
@@ -33,6 +52,7 @@ pipeline {
                 sh 'whoami && hostname'
                 echo 'Ejecutando Bandit...'
                 sh 'bandit -r src -f json -o bandit-report.json'
+                stash includes: 'bandit-report.json', name: 'bandit'
             }
         }
 
@@ -40,7 +60,7 @@ pipeline {
             agent any
             steps {
                 sh 'whoami && hostname'
-                echo 'Desplegando entorno Staging con SAM...'
+                echo 'Desplegando entorno Staging con SAM usando configuración externa...'
                 sh 'sam build'
                 sh 'sam validate --region ${AWS_DEFAULT_REGION}'
                 sh '''
@@ -56,7 +76,7 @@ pipeline {
         }
 
         stage('Obtener URL de API Gateway') {
-            agent any
+            agent { label 'agent-estatico' }
             steps {
                 echo 'Obteniendo URL base del API Gateway desde CloudFormation...'
                 script {
@@ -81,26 +101,36 @@ pipeline {
                 API_GATEWAY_URL = "${env.API_GATEWAY_URL}"
             }
             steps {
+                echo 'Clonando repositorio de código fuente en agent-api...'
                 sh 'whoami && hostname'
+                // Replicar entorno
+                git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'develop'
+                sh 'rm -rf config'
+                sh 'git clone --single-branch --branch staging https://github.com/pablohitos/todo-list-aws-config.git config'
+                sh 'cp config/samconfig.toml .'
+
                 echo "Ejecutando pruebas REST contra ${API_GATEWAY_URL}..."
                 sh '''
                     export PYTHONPATH=:$WORKSPACE/src
                     pytest test/ --junitxml=result.xml
                 '''
                 archiveArtifacts artifacts: 'result.xml', fingerprint: true
+                stash includes: 'result.xml', name: 'pytest-results'
             }
         }
 
         stage('Promoción a main') {
             agent { label 'agent-estatico' }
             steps {
+                deleteDir()
+                git credentialsId: 'github-token', url: 'https://github.com/pablohitos/todo-list-aws-unir', branch: 'develop'
                 sh 'whoami && hostname'
                 echo 'Promoviendo cambios a rama main...'
                 withCredentials([usernamePassword(credentialsId: 'github-token-userpass', usernameVariable: 'GIT_USERNAME', passwordVariable: 'GIT_PASSWORD')]) {
                     sh '''
                         git config --global user.email "jenkins@example.com"
                         git config --global user.name "Jenkins"
-                        git checkout main
+                        git checkout main || git checkout -b main origin/main
                         git merge develop
                         git push https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/pablohitos/todo-list-aws-unir main
                     '''
@@ -113,15 +143,9 @@ pipeline {
         always {
             node(label: 'agent-estatico') {
                 echo 'Pipeline de integración continua finalizado.'
-
-                // Copiar el archivo result.xml desde el mismo build
-                step([
-                    $class: 'CopyArtifact',
-                    projectName: env.JOB_NAME,
-                    selector: [$class: 'SpecificBuildSelector', buildNumber: env.BUILD_NUMBER],
-                    filter: 'result.xml'
-                ])
-
+                unstash 'flake8'
+                unstash 'bandit'
+                unstash 'pytest-results'
                 junit 'result.xml'
                 recordIssues tools: [pyLint(pattern: 'flake8-report.txt')]
                 archiveArtifacts artifacts: 'bandit-report.json', fingerprint: true
@@ -129,3 +153,4 @@ pipeline {
         }
     }
 }
+
